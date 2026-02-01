@@ -1,5 +1,7 @@
 import os
 import json
+from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -7,6 +9,9 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+
+
+TEACHER_ID = 5003470564
 
 # ===============================
 # 1) ПИТАННЯ ТЕСТУ
@@ -19,9 +24,9 @@ QUESTIONS = [
             "Комп’ютерна гра",
             "Послідовність команд для виконання завдання",
             "Назва програми",
-            "Частина клавіатури"
+            "Частина клавіатури",
         ],
-        "correct": 1
+        "correct": 1,
     },
     {
         "question": "2️⃣ Яка одиниця вимірювання інформації є найменшою?",
@@ -29,9 +34,9 @@ QUESTIONS = [
             "Кілобайт",
             "Байт",
             "Біт",
-            "Мегабайт"
+            "Мегабайт",
         ],
-        "correct": 2
+        "correct": 2,
     },
     {
         "question": "3️⃣ Що з переліченого є прикладом операційної системи?",
@@ -39,18 +44,18 @@ QUESTIONS = [
             "Microsoft Word",
             "Google Chrome",
             "Windows",
-            "Paint"
+            "Paint",
         ],
-        "correct": 2
-    }
+        "correct": 2,
+    },
 ]
-
 
 WINNERS_FILE = "winners.json"
 
 # ===============================
 # 2) ЗАВАНТАЖЕННЯ / ЗБЕРЕЖЕННЯ
 # ===============================
+
 
 def load_winners():
     if not os.path.exists(WINNERS_FILE):
@@ -68,10 +73,9 @@ def save_winners(winners):
 # 3) ПОКАЗ ПИТАННЯ
 # ===============================
 
-async def send_question(update, context):
-    user_data = context.user_data
-    index = user_data["current_question"]
 
+async def send_question(update, context):
+    index = context.user_data["current_question"]
     q = QUESTIONS[index]
 
     keyboard = []
@@ -84,13 +88,14 @@ async def send_question(update, context):
 
     await update.effective_chat.send_message(
         q["question"],
-        reply_markup=reply_markup
+        reply_markup=reply_markup,
     )
 
 
 # ===============================
 # 4) START
 # ===============================
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_question"] = 0
@@ -107,27 +112,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 5) ОБРОБКА ВІДПОВІДІ
 # ===============================
 
+
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_data = context.user_data
-    index = user_data["current_question"]
+    index = context.user_data["current_question"]
 
     selected = int(query.data.split("_")[1])
     correct = QUESTIONS[index]["correct"]
 
     if selected == correct:
-        user_data["score"] += 1
+        context.user_data["score"] += 1
         await query.edit_message_text("✅ Правильно!")
     else:
         await query.edit_message_text("❌ Неправильно!")
 
     # Наступне питання
-    user_data["current_question"] += 1
+    context.user_data["current_question"] += 1
 
     # Якщо питання закінчились
-    if user_data["current_question"] >= len(QUESTIONS):
+    if context.user_data["current_question"] >= len(QUESTIONS):
         await finish_quiz(query, context)
     else:
         await send_question(update, context)
@@ -137,6 +142,7 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 6) ФІНІШ ТЕСТУ
 # ===============================
 
+
 async def finish_quiz(query, context):
     score = context.user_data["score"]
     user = query.from_user
@@ -144,12 +150,23 @@ async def finish_quiz(query, context):
     if score == len(QUESTIONS):
         winners = load_winners()
 
+        name = user.username or user.full_name
+
         # Перевірка чи вже вигравав
-        if user.username not in winners:
-            winners.append(user.username or user.full_name)
+        already_won = any(w["name"] == name for w in winners)
+
+        if not already_won:
+            winners.append(
+                {
+                    "name": name,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
             save_winners(winners)
 
-        position = winners.index(user.username or user.full_name) + 1
+        position = next(
+            i for i, w in enumerate(winners, start=1) if w["name"] == name
+        )
 
         await query.message.reply_text(
             f"🏆 ПЕРЕМОГА!\n"
@@ -164,10 +181,15 @@ async def finish_quiz(query, context):
 
 
 # ===============================
-# 7) СПИСОК ПЕРЕМОЖЦІВ ДЛЯ ВЧИТЕЛЯ
+# 7) СПИСОК ПЕРЕМОЖЦІВ (ТІЛЬКИ ВЧИТЕЛЬ)
 # ===============================
 
+
 async def winners_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("❌ Ця команда доступна тільки вчителю.")
+        return
+
     winners = load_winners()
 
     if not winners:
@@ -175,24 +197,43 @@ async def winners_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = "🏆 Список переможців:\n\n"
-    for i, name in enumerate(winners, start=1):
-        text += f"{i}. {name}\n"
+    for i, w in enumerate(winners, start=1):
+        text += f"{i}. {w['name']} — {w['time']}\n"
 
     await update.message.reply_text(text)
 
 
 # ===============================
-# 8) MAIN
+# 8) ОЧИЩЕННЯ СПИСКУ (ТІЛЬКИ ВЧИТЕЛЬ)
 # ===============================
 
+
+async def clean_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != TEACHER_ID:
+        await update.message.reply_text("❌ Ця команда доступна тільки вчителю.")
+        return
+
+    save_winners([])
+    await update.message.reply_text("✅ Список переможців очищено!")
+
+
+# ===============================
+# 9) MAIN
+# ===============================
+
+
 def main():
-    
-    TOKEN = os.getenv("TOKEN")
+    TOKEN = os.getenv("TOKEN", "").strip().strip('"').strip("'")
+
+    if not TOKEN:
+        raise ValueError("❌ TOKEN не заданий у Railway Variables!")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("winners", winners_list))
+    app.add_handler(CommandHandler("clean", clean_winners))
+
     app.add_handler(CallbackQueryHandler(handle_answer))
 
     print("Бот працює...")
