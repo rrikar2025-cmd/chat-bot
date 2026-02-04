@@ -7,6 +7,8 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -21,7 +23,7 @@ QUESTIONS = [
     {
         "question": "1️⃣ Що таке алгоритм?",
         "options": [
-            "Комп’ютерна гра",
+            "Комп'ютерна гра",
             "Послідовність команд для виконання завдання",
             "Назва програми",
             "Частина клавіатури",
@@ -47,6 +49,11 @@ QUESTIONS = [
             "Paint",
         ],
         "correct": 2,
+    },
+    {
+        "question": "4️⃣ Яка відповідь була у останньому ребусі (Четвер)?\n\n📝 Введіть відповідь текстом:",
+        "type": "text_input",
+        "correct_answer": "коридор",
     },
 ]
 
@@ -78,6 +85,13 @@ async def send_question(update, context):
     index = context.user_data["current_question"]
     q = QUESTIONS[index]
 
+    # Якщо питання з текстовим вводом
+    if q.get("type") == "text_input":
+        context.user_data["awaiting_text_answer"] = True
+        await update.effective_chat.send_message(q["question"])
+        return
+
+    # Звичайне питання з варіантами
     keyboard = []
     for i, option in enumerate(q["options"]):
         keyboard.append(
@@ -100,9 +114,10 @@ async def send_question(update, context):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["current_question"] = 0
     context.user_data["score"] = 0
+    context.user_data["awaiting_text_answer"] = False
 
     await update.message.reply_text(
-        "Привіт! Починаємо тест з 3 питань ✅"
+        f"Привіт! Починаємо тест з {len(QUESTIONS)} питань ✅"
     )
 
     await send_question(update, context)
@@ -139,7 +154,79 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ===============================
-# 6) ФІНІШ ТЕСТУ
+# 6) ОБРОБКА ТЕКСТОВОЇ ВІДПОВІДІ
+# ===============================
+
+
+async def handle_text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Перевіряємо чи очікуємо текстову відповідь
+    if not context.user_data.get("awaiting_text_answer"):
+        return
+
+    context.user_data["awaiting_text_answer"] = False
+
+    index = context.user_data["current_question"]
+    q = QUESTIONS[index]
+
+    user_answer = update.message.text.strip().lower()
+    correct_answer = q["correct_answer"].lower()
+
+    if user_answer == correct_answer:
+        context.user_data["score"] += 1
+        await update.message.reply_text("✅ Правильно!")
+    else:
+        await update.message.reply_text("❌ Неправильно!")
+
+    # Наступне питання
+    context.user_data["current_question"] += 1
+
+    # Якщо питання закінчились
+    if context.user_data["current_question"] >= len(QUESTIONS):
+        await finish_quiz_text(update, context)
+    else:
+        await send_question(update, context)
+
+
+async def finish_quiz_text(update, context):
+    """Фініш тесту для текстових відповідей"""
+    score = context.user_data["score"]
+    user = update.effective_user
+
+    if score == len(QUESTIONS):
+        winners = load_winners()
+
+        name = user.username or user.full_name
+
+        # Перевірка чи вже вигравав
+        already_won = any(w["name"] == name for w in winners)
+
+        if not already_won:
+            winners.append(
+                {
+                    "name": name,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            )
+            save_winners(winners)
+
+        position = next(
+            i for i, w in enumerate(winners, start=1) if w["name"] == name
+        )
+
+        await update.message.reply_text(
+            f"🏆 ПЕРЕМОГА!\n"
+            f"Ти відповів правильно на всі питання!\n"
+            f"Ти №{position} у списку переможців 🎉"
+        )
+    else:
+        await update.message.reply_text(
+            f"Тест завершено.\n"
+            f"Правильних відповідей: {score}/{len(QUESTIONS)}"
+        )
+
+
+# ===============================
+# 7) ФІНІШ ТЕСТУ
 # ===============================
 
 
@@ -176,7 +263,7 @@ async def finish_quiz(query, context):
     else:
         await query.message.reply_text(
             f"Тест завершено.\n"
-            f"Правильних відповідей: {score}/3"
+            f"Правильних відповідей: {score}/{len(QUESTIONS)}"
         )
 
 
@@ -235,6 +322,7 @@ def main():
     app.add_handler(CommandHandler("clean", clean_winners))
 
     app.add_handler(CallbackQueryHandler(handle_answer))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_answer))
 
     print("Бот працює...")
     app.run_polling()
